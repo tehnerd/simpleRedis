@@ -42,25 +42,8 @@ func ParseRedisResponse(response []byte, dataBuf []byte, Len *int) ([]byte, []by
 		}
 	}
 	switch string(response[0]) {
-	case "+":
-		//simple strings. usually ther are in format +DATA\r\n"
-		if len(response) < 3 {
-			return nil, dataBuf
-		}
-		response = response[1 : len(response)-2]
-		if string(response) == "OK" || string(response) == "PONG" {
-			return nil, dataBuf
-		}
-	case "-":
-		//error .format -ERROR\r\n"
-		if len(response) < 3 {
-			return nil, dataBuf
-		}
-		response = response[1 : len(response)-2]
-		return response, dataBuf
-
-	case ":":
-		//ints .format :INT\r\n"
+	case "+", "-", ":":
+		//simple strings, error,int. usually ther are in format (+|-|:)DATA\r\n"
 		if len(response) < 3 {
 			return nil, dataBuf
 		}
@@ -133,7 +116,7 @@ func RedisContext(hostnamePort string, redisCmd chan RedisCmd) {
 					data, dataBuf = ParseRedisResponse(response, dataBuf, &dataLen)
 				}
 			}
-			if data != nil {
+			if data != nil && (len(data) != 4 || string(data) != "PONG") {
 				var responseData RedisCmd
 				responseData.Data = data
 				redisCmd <- responseData
