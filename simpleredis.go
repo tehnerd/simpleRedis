@@ -5,6 +5,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type RedisCmd struct {
@@ -33,55 +34,62 @@ func RedisGet(name string) []byte {
 }
 
 func ParseRedisResponse(response []byte, dataBuf []byte, Len *int) ([]byte, []byte) {
+	dataBuf = append(dataBuf, response...)
 	if *Len != 0 {
-		dataBuf = append(dataBuf, response...)
 		if len(dataBuf) < *Len {
 			return nil, dataBuf
 		} else {
-			return dataBuf[:*Len], dataBuf
+			return dataBuf[:*Len], dataBuf[:*Len]
 		}
 	}
 	for {
-		switch string(response[0]) {
+		switch string(dataBuf[0]) {
 		case "+", "-", ":":
 			//simple strings, error,int. usually ther are in format (+|-|:)DATA\r\n"
-			if len(response) < 3 {
+			if len(dataBuf) < 3 {
 				return nil, dataBuf
 			}
-			response = response[1 : len(response)-2]
-			return response, dataBuf
-		case "$":
-			//bulk string. format $LEN\r\nDATA\r\n. up to 512MB
 			cntr := 1
-			for ; cntr < len(response); cntr++ {
-				if string(response[cntr]) == "\r" {
-					cntr += 2
+			for ; cntr < len(dataBuf); cntr++ {
+				if dataBuf[cntr] == '\r' {
 					break
 				}
 			}
-			dataLen, err := strconv.Atoi(string(response[1 : cntr-2]))
+			if cntr == len(dataBuf) {
+				return nil, dataBuf
+			}
+			response = dataBuf[1:cntr]
+			return response, dataBuf[cntr+2:]
+		case "$":
+			//bulk string. format $LEN\r\nDATA\r\n. up to 512MB
+			cntr := 1
+			for ; cntr < len(dataBuf); cntr++ {
+				if string(dataBuf[cntr]) == "\r" {
+					break
+				}
+			}
+			if cntr == len(dataBuf) {
+				return nil, dataBuf
+			}
+			dataLen, err := strconv.Atoi(string(dataBuf[1:cntr]))
 			if err != nil {
-				return nil, dataBuf
+				return nil, dataBuf[cntr:]
 			}
+
 			if dataLen == -1 {
-				return []byte("NOT FOUND"), dataBuf
+				return []byte("NOT FOUND"), dataBuf[cntr:]
 			}
-			if cntr > len(response) || cntr > len(response)-2 {
+			if len(dataBuf[cntr:len(dataBuf)-2]) < dataLen {
 				*Len = dataLen
-				return nil, dataBuf
-			}
-			if len(response[cntr:len(response)-2]) < dataLen {
-				dataBuf = append(dataBuf, response[cntr:]...)
-				*Len = dataLen
-				return nil, dataBuf
+				return nil, dataBuf[cntr:]
 			} else {
-				return response[cntr : cntr+dataLen], dataBuf
+				return dataBuf[cntr : cntr+dataLen], dataBuf[cntr+dataLen:]
 			}
 		case "*":
 			panic("array")
 		default:
-			if len(response) > 1 {
-				response = response[1:]
+			if len(dataBuf) > 1 {
+				dataBuf = dataBuf[1:]
 			} else {
 				return nil, dataBuf
 			}
@@ -100,8 +108,9 @@ func RedisContext(hostnamePort string, redisCmd chan RedisCmd) {
 	initMsg := []byte("*1\r\n$4\r\nPING\r\n")
 	writeChan := make(chan []byte)
 	readChan := make(chan []byte)
+	flushChan := make(chan int)
 	go utils.AutoRecoonectedTCP(ladr, tcpRemoteAddress, msgBuf,
-		initMsg, writeChan, readChan)
+		initMsg, writeChan, readChan, flushChan)
 	<-readChan
 	loop := 1
 	dataBuf := make([]byte, 0)
@@ -130,7 +139,13 @@ func RedisContext(hostnamePort string, redisCmd chan RedisCmd) {
 				responseData.Data = data
 				redisCmd <- responseData
 				dataLen = 0
-				dataBuf = dataBuf[:]
+			}
+		case <-flushChan:
+			dataBuf = dataBuf[:]
+			dataLen = 0
+			select {
+			case redisCmd <- RedisCmd{}:
+			case <-time.After(time.Second * 5):
 			}
 		}
 	}
