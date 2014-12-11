@@ -64,7 +64,7 @@ func ParseRedisResponse(response []byte, dataBuf []byte, Len *int) ([]byte, []by
 				return nil, dataBuf
 			}
 			if dataLen == -1 {
-				return nil, dataBuf
+				return []byte("NOT FOUND"), dataBuf
 			}
 			if cntr > len(response) || cntr > len(response)-2 {
 				*Len = dataLen
@@ -83,7 +83,7 @@ func ParseRedisResponse(response []byte, dataBuf []byte, Len *int) ([]byte, []by
 			if len(response) > 1 {
 				response = response[1:]
 			} else {
-				break
+				return nil, dataBuf
 			}
 		}
 	}
