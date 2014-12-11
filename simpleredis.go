@@ -41,42 +41,51 @@ func ParseRedisResponse(response []byte, dataBuf []byte, Len *int) ([]byte, []by
 			return dataBuf[:*Len], dataBuf
 		}
 	}
-	switch string(response[0]) {
-	case "+", "-", ":":
-		//simple strings, error,int. usually ther are in format (+|-|:)DATA\r\n"
-		if len(response) < 3 {
-			return nil, dataBuf
-		}
-		response = response[1 : len(response)-2]
-		return response, dataBuf
-	case "$":
-		//bulk string. format $LEN\r\nDATA\r\n. up to 512MB
-		cntr := 1
-		for ; cntr < len(response); cntr++ {
-			if string(response[cntr]) == "\r" {
-				cntr += 2
+	for {
+		switch string(response[0]) {
+		case "+", "-", ":":
+			//simple strings, error,int. usually ther are in format (+|-|:)DATA\r\n"
+			if len(response) < 3 {
+				return nil, dataBuf
+			}
+			response = response[1 : len(response)-2]
+			return response, dataBuf
+		case "$":
+			//bulk string. format $LEN\r\nDATA\r\n. up to 512MB
+			cntr := 1
+			for ; cntr < len(response); cntr++ {
+				if string(response[cntr]) == "\r" {
+					cntr += 2
+					break
+				}
+			}
+			dataLen, err := strconv.Atoi(string(response[1 : cntr-2]))
+			if err != nil {
+				return nil, dataBuf
+			}
+			if dataLen == -1 {
+				return nil, dataBuf
+			}
+			if cntr > len(response) || cntr > len(response)-2 {
+				*Len = dataLen
+				return nil, dataBuf
+			}
+			if len(response[cntr:len(response)-2]) < dataLen {
+				dataBuf = append(dataBuf, response[cntr:]...)
+				*Len = dataLen
+				return nil, dataBuf
+			} else {
+				return response[cntr : cntr+dataLen], dataBuf
+			}
+		case "*":
+			panic("array")
+		default:
+			if len(response) > 1 {
+				response = response[1:]
+			} else {
 				break
 			}
 		}
-		dataLen, err := strconv.Atoi(string(response[1 : cntr-2]))
-		if err != nil {
-			return nil, dataBuf
-		}
-		if dataLen == -1 {
-			return nil, dataBuf
-		}
-		if cntr > len(response) || cntr > len(response)-2 {
-			*Len = dataLen
-			return nil, dataBuf
-		}
-		if len(response[cntr:len(response)-2]) < dataLen {
-			dataBuf = append(dataBuf, response[cntr:]...)
-			*Len = dataLen
-			return nil, dataBuf
-		} else {
-			return response[cntr : cntr+dataLen], dataBuf
-		}
-
 	}
 	return nil, dataBuf
 }
