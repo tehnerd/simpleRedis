@@ -14,6 +14,12 @@ type RedisCmd struct {
 	Data    []byte
 }
 
+type SimpleRedis struct {
+	redisChan chan RedisCmd
+	redisHost string
+	redisCmd  RedisCmd
+}
+
 func GenRedisArray(params ...[]byte) []byte {
 	CRLF := "\r\n"
 	MSG := strings.Join([]string{"*", strconv.Itoa(len(params)), CRLF}, "")
@@ -35,11 +41,12 @@ func RedisGet(name string) []byte {
 
 func ParseRedisResponse(response []byte, dataBuf []byte, Len *int) ([]byte, []byte) {
 	dataBuf = append(dataBuf, response...)
+	lenCRLF := 2
 	if *Len != 0 {
 		if len(dataBuf) < *Len {
 			return nil, dataBuf
 		} else {
-			return dataBuf[:*Len], dataBuf[:*Len]
+			return dataBuf[:*Len], dataBuf[*Len:]
 		}
 	}
 	for {
@@ -68,7 +75,7 @@ func ParseRedisResponse(response []byte, dataBuf []byte, Len *int) ([]byte, []by
 					break
 				}
 			}
-			if cntr == len(dataBuf) {
+			if cntr == len(dataBuf) || cntr+lenCRLF > len(dataBuf) {
 				return nil, dataBuf
 			}
 			dataLen, err := strconv.Atoi(string(dataBuf[1:cntr]))
@@ -79,11 +86,15 @@ func ParseRedisResponse(response []byte, dataBuf []byte, Len *int) ([]byte, []by
 			if dataLen == -1 {
 				return []byte("NOT FOUND"), dataBuf[cntr:]
 			}
-			if len(dataBuf[cntr:len(dataBuf)-2]) < dataLen {
+			if cntr+lenCRLF > len(dataBuf)-lenCRLF {
 				*Len = dataLen
-				return nil, dataBuf[cntr:]
+				return nil, dataBuf[cntr+lenCRLF:]
+			}
+			if len(dataBuf[cntr+lenCRLF:len(dataBuf)-lenCRLF]) < dataLen {
+				*Len = dataLen
+				return nil, dataBuf[cntr+lenCRLF:]
 			} else {
-				return dataBuf[cntr : cntr+dataLen], dataBuf[cntr+dataLen:]
+				return dataBuf[cntr+lenCRLF : cntr+dataLen+lenCRLF], dataBuf[cntr+dataLen+lenCRLF:]
 			}
 		case "*":
 			panic("array")
@@ -149,4 +160,19 @@ func RedisContext(hostnamePort string, redisCmd chan RedisCmd) {
 			}
 		}
 	}
+}
+
+func (sr *SimpleRedis) Init(redisHost string) {
+	sr.redisHost = redisHost
+	sr.redisChan = make(chan RedisCmd)
+	go RedisContext(sr.redisHost, sr.redisChan)
+}
+
+func (sr *SimpleRedis) Do(cmd, name string, data []byte) []byte {
+	sr.redisCmd.Command = cmd
+	sr.redisCmd.Name = name
+	sr.redisCmd.Data = data
+	sr.redisChan <- sr.redisCmd
+	sr.redisCmd = <-sr.redisChan
+	return sr.redisCmd.Data
 }
