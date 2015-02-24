@@ -1,7 +1,8 @@
 package simpleredis
 
 import (
-	utils "github.com/tehnerd/goUtils"
+	"fmt"
+	"github.com/tehnerd/goUtils/netutils"
 	"net"
 	"strconv"
 	"strings"
@@ -15,9 +16,10 @@ type RedisCmd struct {
 }
 
 type SimpleRedis struct {
-	redisChan chan RedisCmd
-	redisHost string
-	redisCmd  RedisCmd
+	redisChanRead  chan RedisCmd
+	redisChanWrite chan RedisCmd
+	redisHost      string
+	redisCmd       RedisCmd
 }
 
 func GenRedisArray(params ...[]byte) []byte {
@@ -109,7 +111,7 @@ func ParseRedisResponse(response []byte, dataBuf []byte, Len *int) ([]byte, []by
 	return nil, dataBuf
 }
 
-func RedisContext(hostnamePort string, redisCmd chan RedisCmd) {
+func RedisContext(hostnamePort string, redisCmdWrite, redisCmdRead chan RedisCmd) {
 	tcpRemoteAddress, err := net.ResolveTCPAddr("tcp", hostnamePort)
 	if err != nil {
 		panic("cant resolve remote redis address")
@@ -120,7 +122,7 @@ func RedisContext(hostnamePort string, redisCmd chan RedisCmd) {
 	writeChan := make(chan []byte)
 	readChan := make(chan []byte)
 	flushChan := make(chan int)
-	go utils.AutoRecoonectedTCP(ladr, tcpRemoteAddress, msgBuf,
+	go netutils.AutoRecoonectedTCP(ladr, tcpRemoteAddress, msgBuf,
 		initMsg, writeChan, readChan, flushChan)
 	<-readChan
 	loop := 1
@@ -128,7 +130,7 @@ func RedisContext(hostnamePort string, redisCmd chan RedisCmd) {
 	dataLen := 0
 	for loop == 1 {
 		select {
-		case cmd := <-redisCmd:
+		case cmd := <-redisCmdWrite:
 			switch cmd.Command {
 			case "SET":
 				data := RedisSet(cmd.Name, cmd.Data)
@@ -148,14 +150,18 @@ func RedisContext(hostnamePort string, redisCmd chan RedisCmd) {
 			if data != nil && (len(data) != 4 || string(data) != "PONG") {
 				var responseData RedisCmd
 				responseData.Data = data
-				redisCmd <- responseData
+				select {
+				case redisCmdRead <- responseData:
+				case <-time.After(1 * time.Minute):
+					fmt.Println(string(responseData.Data))
+				}
 				dataLen = 0
 			}
 		case <-flushChan:
 			dataBuf = dataBuf[:]
 			dataLen = 0
 			select {
-			case redisCmd <- RedisCmd{}:
+			case redisCmdRead <- RedisCmd{}:
 			case <-time.After(time.Second * 5):
 			}
 		}
@@ -164,15 +170,16 @@ func RedisContext(hostnamePort string, redisCmd chan RedisCmd) {
 
 func (sr *SimpleRedis) Init(redisHost string) {
 	sr.redisHost = redisHost
-	sr.redisChan = make(chan RedisCmd)
-	go RedisContext(sr.redisHost, sr.redisChan)
+	sr.redisChanWrite = make(chan RedisCmd)
+	sr.redisChanRead = make(chan RedisCmd)
+	go RedisContext(sr.redisHost, sr.redisChanWrite, sr.redisChanRead)
 }
 
 func (sr *SimpleRedis) Do(cmd, name string, data []byte) []byte {
 	sr.redisCmd.Command = cmd
 	sr.redisCmd.Name = name
 	sr.redisCmd.Data = data
-	sr.redisChan <- sr.redisCmd
-	sr.redisCmd = <-sr.redisChan
+	sr.redisChanWrite <- sr.redisCmd
+	sr.redisCmd = <-sr.redisChanRead
 	return sr.redisCmd.Data
 }
